@@ -1,14 +1,18 @@
 import puppeteer from 'puppeteer';
-import * as cheerio from 'cheerio';
-import { PageMetadata, ScrapingResult } from './types';
-import { htmlToMarkdown } from './converter';
+import { ContentConverter } from './converter';
+import { ScrapingResult, PageMetadata } from './types';
 
 export class PageProcessor {
   private browser: puppeteer.Browser | null = null;
+  private converter: ContentConverter;
+
+  constructor() {
+    this.converter = new ContentConverter();
+  }
 
   async initialize(): Promise<void> {
     this.browser = await puppeteer.launch({
-      headless: true,
+      headless: 'new',
       args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
   }
@@ -25,46 +29,58 @@ export class PageProcessor {
       throw new Error('Browser not initialized');
     }
 
+    const page = await this.browser.newPage();
+    
     try {
-      const page = await this.browser.newPage();
-      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+      // Set reasonable viewport
+      await page.setViewport({ width: 1280, height: 800 });
 
-      await page.goto(url, { 
+      // Navigate to page with timeout
+      await page.goto(url, {
         waitUntil: 'networkidle0',
-        timeout: 30000 
+        timeout: 30000
       });
 
-      const metadata = await this.extractMetadata(page);
-      const html = await page.content();
-      const content = await htmlToMarkdown(html);
+      // Wait for content to load
+      await page.waitForSelector('body', { timeout: 5000 });
 
-      await page.close();
+      // Get page content
+      const html = await page.content();
+
+      // Process content
+      const $ = await page.evaluate(() => document.documentElement.outerHTML);
+      const content = this.converter.convertToMarkdown($);
+
+      // Extract metadata
+      const metadata: PageMetadata = {
+        url,
+        title: await page.title(),
+        lastModified: await page.evaluate(() => {
+          const modified = document.querySelector('meta[name="last-modified"]');
+          return modified ? modified.getAttribute('content') : undefined;
+        }),
+        category: await page.evaluate(() => {
+          const breadcrumb = document.querySelector('.breadcrumb, .breadcrumbs');
+          return breadcrumb ? breadcrumb.textContent : undefined;
+        })
+      };
 
       return {
         metadata,
         content,
         success: true
       };
+
     } catch (error) {
+      console.error(`Error processing ${url}:`, error);
       return {
         metadata: { url, title: '' },
         content: '',
         success: false,
         error: error.message
       };
+    } finally {
+      await page.close();
     }
-  }
-
-  private async extractMetadata(page: puppeteer.Page): Promise<PageMetadata> {
-    return {
-      url: page.url(),
-      title: await page.title(),
-      lastModified: await page.$eval('meta[property="article:modified_time"]', 
-        (el) => el.getAttribute('content') || undefined
-      ).catch(() => undefined),
-      category: await page.$eval('[data-category]',
-        (el) => el.getAttribute('data-category') || undefined
-      ).catch(() => undefined)
-    };
   }
 }

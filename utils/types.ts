@@ -19,3 +19,8 @@ export interface RateLimiter {
   refillRate: number;
   maxTokens: number;
 }
+
+export interface ValidationResult {
+  isValid: boolean;
+  issues: string[];
+}
